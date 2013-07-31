@@ -1,4 +1,5 @@
-// oauthprovider is a full implementation of http://tools.ietf.org/html/rfc5849. Objects and methods are closely named after the RFC vocabulary, and the most significant parts of the RFC are cited in comments.
+// oauthprovider is a full implementation of OAuth 1.0 for service providers.
+// Objects and methods are closely named after the http://tools.ietf.org/html/rfc5849 vocabulary, and the most significant parts of the RFC are cited in comments.
 //
 // Usage:
 // 
