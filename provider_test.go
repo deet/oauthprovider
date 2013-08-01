@@ -28,8 +28,11 @@ func (f FakeStore) ValidateToken(token, consumer_key string) bool {
 	return true
 }
 
-func (f FakeStore) CreateToken(consumer_key string) (token_key, token_secret string) {
+func (f FakeStore) CreateTemporaryCredentials(consumer_key string) (token_key, token_secret string) {
 	return "token_key", "token_secret"
+}
+func (f FakeStore) CreateCredentials(consumer_key, request_token string) (token_key, token_secret string) {
+	return "permanent_token_key", "permanent_token_secret"
 }
 
 func Test_Check(t *testing.T) {

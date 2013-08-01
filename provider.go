@@ -1,24 +1,84 @@
-// oauthprovider is a full implementation of OAuth 1.0 for service providers.
+// oauthprovider implements OAuth 1.0 for service providers.
+//
 // Objects and methods are closely named after the http://tools.ietf.org/html/rfc5849 vocabulary, and the most significant parts of the RFC are cited in comments.
 //
 // Usage:
 // 
-// 1 - Provide an implementation of the interface BackendStore, mainly to provide access to storage/security policy.
+// 1 - Provide an implementation of the interface BackendStore, mainly to provide access to storage/security policies.
 // BackendStore is a very simple interface.
 //
-// 2 - Authenticate an http.Request as follow
+// 2 - Implement the Resource-Owner-Authorization Entry Point.
+// OAuth requires three entry points. We can only provide two of them. For the Resource Owner Authorization you're on your own.
+// Here is what you need to do:
+//   resource owner authorization is the endpoint to which the resource owner is redirected to grant
+//   authorization as described in http://tools.ietf.org/html/rfc5849#section-2.2
 //
-//    func httpHandler(w http.Writer, r *http.Request) {
-//     authenticatedRequest, err := NewAuthenticatedRequest(req, store)
-//    }
+//   Before the client requests a set of token credentials from the
+//   server, it MUST send the user to the server to authorize the request.
+//   The client constructs a request URI by adding the following REQUIRED
+//   query parameter to the Resource Owner Authorization endpoint URI:
+//   oauth_token
+//         The temporary credentials identifier obtained in Section 2.1 in
+//         the "oauth_token" parameter.  Servers MAY declare this
+//         parameter as OPTIONAL, in which case they MUST provide a way
+//         for the resource owner to indicate the identifier through other
+//         means.
 //
-// Where:
+//   Servers MAY specify additional parameters.
 //
-//"store" is the BackendStore provided.
+//   The client directs the resource owner to the constructed URI using an
+//   HTTP redirection response, or by other means available to it via the
+//   resource owner's user-agent.  The request MUST use the HTTP "GET"
+//   method.
 //
-// "authenticatedRequest" has made all the checks required by RFC. It also provides access to all the oauth parameters.
-// 
+//   For example, the client redirects the resource owner's user-agent to
+//   make the following HTTPS request:
 //
+//     GET /authorize_access?oauth_token=hdk48Djdsa HTTP/1.1
+//     Host: server.example.com
+//
+//   The way in which the server handles the authorization request,
+//   including whether it uses a secure channel such as TLS/SSL is beyond
+//   the scope of this specification.  However, the server MUST first
+//   verify the identity of the resource owner.
+//
+//   When asking the resource owner to authorize the requested access, the
+//   server SHOULD present to the resource owner information about the
+//   client requesting access based on the association of the temporary
+//   credentials with the client identity.  When displaying any such
+//   information, the server SHOULD indicate if the information has been
+//   verified.
+//
+//   After receiving an authorization decision from the resource owner,
+//   the server redirects the resource owner to the callback URI if one
+//   was provided in the "oauth_callback" parameter or by other means.
+//
+//   To make sure that the resource owner granting access is the same
+//   resource owner returning back to the client to complete the process,
+//   the server MUST generate a verification code: an unguessable value
+//   passed to the client via the resource owner and REQUIRED to complete
+//   the process.  The server constructs the request URI by adding the
+//   following REQUIRED parameters to the callback URI query component:
+//
+//   oauth_token
+//         The temporary credentials identifier received from the client.
+//   oauth_verifier
+//         The verification code.
+//
+//   If the callback URI already includes a query component, the server
+//   MUST append the OAuth parameters to the end of the existing query.
+//
+//   For example, the server redirects the resource owner's user-agent to
+//   make the following HTTP request:
+//
+//     GET /cb?x=1&oauth_token=hdk48Djdsa&oauth_verifier=473f82d3 HTTP/1.1
+//     Host: client.example.net
+//
+//   If the client did not provide a callback URI, the server SHOULD
+//   display the value of the verification code, and instruct the resource
+//   owner to manually inform the client that authorization is completed.
+//   If the server knows a client to be running on a limited device, it
+//   SHOULD ensure that the verifier value is suitable for manual entry.
 package oauthprovider
 
 import (
@@ -88,7 +148,12 @@ type BackendStore interface {
 	//      choose to restrict token usage to the client to which it was
 	//      issued).
 	ValidateToken(token_key, consumer_key string) bool
-	CreateToken(consumer_key string) (token_key, token_secret string)
+	//Creates a pair of temporary tokens. Server may set a time limit for them or any other security issue.
+	CreateTemporaryCredentials(consumer_key string) (token_key, token_secret string)
+
+	//Creates a "permament" of tokens. Server may set a time limit for them or any other security issue.
+	//Server MUST make sure that the provided request_token is valid.
+	CreateCredentials(consumer_key, request_token string) (token_key, token_secret string)
 }
 
 //EndPoints provides the three endpoints implementation as defined in RFC5849 
@@ -223,7 +288,7 @@ func (e *EndPoints) TemporaryCredentialRequest(w http.ResponseWriter, r *http.Re
 		http.Error(w, "Missing OAuth Client Credentials: No Consumer Key", http.StatusInternalServerError)
 		return
 	}
-	token_key, token_secret := e.store.CreateToken(consumer_key)
+	token_key, token_secret := e.store.CreateTemporaryCredentials(consumer_key)
 
 	result := make(url.Values)
 	result.Set(TOKEN_PARAM, token_key)
@@ -233,78 +298,6 @@ func (e *EndPoints) TemporaryCredentialRequest(w http.ResponseWriter, r *http.Re
 	w.Header().Set(CONTENT_TYPE_HEADER, FORM_URLENCODED)
 	w.Write(([]byte)(result.Encode()))
 }
-
-//ResourceOwnerAuthorization is a valid http.HandlerFunc that can be used as the resource owner authorization endpoint, defined in the RFC
-//   resource owner authorization is the endpoint to which the resource owner is redirected to grant
-//   authorization as described in http://tools.ietf.org/html/rfc5849#section-2.2
-//
-//   Before the client requests a set of token credentials from the
-//   server, it MUST send the user to the server to authorize the request.
-//   The client constructs a request URI by adding the following REQUIRED
-//   query parameter to the Resource Owner Authorization endpoint URI:
-//   oauth_token
-//         The temporary credentials identifier obtained in Section 2.1 in
-//         the "oauth_token" parameter.  Servers MAY declare this
-//         parameter as OPTIONAL, in which case they MUST provide a way
-//         for the resource owner to indicate the identifier through other
-//         means.
-//
-//   Servers MAY specify additional parameters.
-//
-//   The client directs the resource owner to the constructed URI using an
-//   HTTP redirection response, or by other means available to it via the
-//   resource owner's user-agent.  The request MUST use the HTTP "GET"
-//   method.
-//
-//   For example, the client redirects the resource owner's user-agent to
-//   make the following HTTPS request:
-//
-//     GET /authorize_access?oauth_token=hdk48Djdsa HTTP/1.1
-//     Host: server.example.com
-//
-//   The way in which the server handles the authorization request,
-//   including whether it uses a secure channel such as TLS/SSL is beyond
-//   the scope of this specification.  However, the server MUST first
-//   verify the identity of the resource owner.
-//
-//   When asking the resource owner to authorize the requested access, the
-//   server SHOULD present to the resource owner information about the
-//   client requesting access based on the association of the temporary
-//   credentials with the client identity.  When displaying any such
-//   information, the server SHOULD indicate if the information has been
-//   verified.
-//
-//   After receiving an authorization decision from the resource owner,
-//   the server redirects the resource owner to the callback URI if one
-//   was provided in the "oauth_callback" parameter or by other means.
-//
-//   To make sure that the resource owner granting access is the same
-//   resource owner returning back to the client to complete the process,
-//   the server MUST generate a verification code: an unguessable value
-//   passed to the client via the resource owner and REQUIRED to complete
-//   the process.  The server constructs the request URI by adding the
-//   following REQUIRED parameters to the callback URI query component:
-//
-//   oauth_token
-//         The temporary credentials identifier received from the client.
-//   oauth_verifier
-//         The verification code.
-//
-//   If the callback URI already includes a query component, the server
-//   MUST append the OAuth parameters to the end of the existing query.
-//
-//   For example, the server redirects the resource owner's user-agent to
-//   make the following HTTP request:
-//
-//     GET /cb?x=1&oauth_token=hdk48Djdsa&oauth_verifier=473f82d3 HTTP/1.1
-//     Host: client.example.net
-//
-//   If the client did not provide a callback URI, the server SHOULD
-//   display the value of the verification code, and instruct the resource
-//   owner to manually inform the client that authorization is completed.
-//   If the server knows a client to be running on a limited device, it
-//   SHOULD ensure that the verifier value is suitable for manual entry.
-func (*EndPoints) ResourceOwnerAuthorization(w http.ResponseWriter, r *http.Request) {}
 
 //TokenCredentials  is a valid http.HandlerFunc that can be used as the token credentials endpoint, defined in the RFC
 //
@@ -377,7 +370,34 @@ func (*EndPoints) ResourceOwnerAuthorization(w http.ResponseWriter, r *http.Requ
 //   proceed to access protected resources on behalf of the resource owner
 //   by making authenticated requests (Section 3) using the client
 //   credentials together with the token credentials received.
-func (*EndPoints) TokenCredentials(w http.ResponseWriter, r *http.Request) {}
+func (e *EndPoints) TokenCredentials(w http.ResponseWriter, r *http.Request) {
+	auth, err := NewAuthenticatedRequest(r, e.store)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var consumer_key, request_token string
+	var ok bool
+	consumer_key, ok = auth.GetOAuthParameter(CONSUMER_KEY_PARAM)
+	if !ok {
+		http.Error(w, "Missing OAuth Client Credentials: No Consumer Key", http.StatusInternalServerError)
+		return
+	}
+	request_token, ok = auth.GetOAuthParameter(TOKEN_PARAM)
+	if !ok {
+		http.Error(w, "Missing OAuth temporary credentials: No request token", http.StatusInternalServerError)
+		return
+	}
+
+	token_key, token_secret := e.store.CreateCredentials(consumer_key, request_token)
+
+	result := make(url.Values)
+	result.Set(TOKEN_PARAM, token_key)
+	result.Set(TOKEN_SECRET_PARAM, token_secret)
+
+	w.Header().Set(CONTENT_TYPE_HEADER, FORM_URLENCODED)
+	w.Write(([]byte)(result.Encode()))
+}
 
 //AuthenticatedRequest provide uniform access to all the oauth parameters, if the 
 //http.Request is a valid OAuth request. As defined in the RFC:
