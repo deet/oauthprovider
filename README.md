@@ -5,3 +5,7 @@
 [Read the doc](http://godoc.org/github.com/ericaro/oauthprovider)
 
 
+TODO: 
+
+ - full test of the solution
+ - add some configurations
