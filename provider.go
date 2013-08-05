@@ -131,7 +131,7 @@ const (
 
 var (
 	realmExp          = regexp.MustCompile(` *(OAuth)( +realm="(.*?)")?`)
-	paramExp          = regexp.MustCompile(`(\w+)="(.*?)"`)
+	paramExp          = regexp.MustCompile(` *(\w+)="(.*?) *"`)
 	notAnOAuthRequest = errors.New("Not an OAuth Request")
 )
 
@@ -140,7 +140,10 @@ type BackendStore interface {
 	//ConsumerSecret returns the consumer secret key associated with the consumer key.
 	// in RSA_SHA1 signing method, the "consumer_key" must be the base64 std encoding of the PKIX marshalled public key
 	// it means that to get a rsa.PublicKey object you need to convert the string key into []byte using base64 std encoding, then x509.ParsePublicKeyPKIX()
-	ConsumerSecret(consumer_key string) string
+	ConsumerSecret(consumer_key string) (secret string, err error)
+	//TokenSecret returns the token secret key associated with the token key.
+	// in RSA_SHA1 signing method, the "token_key" is ignnored
+	TokenSecret(token_key string) (secret string, err error)
 	//Uniqueness implements the uniqueness check of the nonce parameter. @see RFC5849 section 3.3
 	Uniqueness(nonce, consumer_key, token_key string) bool
 	//ValidateToken verifying the scope and status of the
@@ -149,11 +152,11 @@ type BackendStore interface {
 	//      issued).
 	ValidateToken(token_key, consumer_key string) bool
 	//Creates a pair of temporary tokens. Server may set a time limit for them or any other security issue.
-	CreateTemporaryCredentials(consumer_key string) (token_key, token_secret string)
+	CreateTemporaryCredentials(consumer_key, callback string) (token_key, token_secret string)
 
 	//Creates a "permament" of tokens. Server may set a time limit for them or any other security issue.
 	//Server MUST make sure that the provided request_token is valid.
-	CreateCredentials(consumer_key, request_token string) (token_key, token_secret string)
+	CreateCredentials(consumer_key, request_token, verifier string) (token_key, token_secret string)
 }
 
 //EndPoints provides the three endpoints implementation as defined in RFC5849 
@@ -281,14 +284,24 @@ func (e *EndPoints) TemporaryCredentialRequest(w http.ResponseWriter, r *http.Re
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	var consumer_key string
+	var consumer_key, callback string
 	var ok bool
 	consumer_key, ok = auth.GetOAuthParameter(CONSUMER_KEY_PARAM)
 	if !ok {
 		http.Error(w, "Missing OAuth Client Credentials: No Consumer Key", http.StatusInternalServerError)
 		return
 	}
-	token_key, token_secret := e.store.CreateTemporaryCredentials(consumer_key)
+	callback, _ = auth.GetOAuthParameter(CALLBACK_PARAM)
+	if callback != "" && callback != "oob" {
+		_, err := url.Parse(callback)
+		if err != nil { // invalid callback
+			http.Error(w, fmt.Sprintf("Invalid OAuth callback URL%v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	// it's ok to not pass anycallback, it just mean oob
+
+	token_key, token_secret := e.store.CreateTemporaryCredentials(consumer_key, callback)
 
 	result := make(url.Values)
 	result.Set(TOKEN_PARAM, token_key)
@@ -376,7 +389,7 @@ func (e *EndPoints) TokenCredentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	var consumer_key, request_token string
+	var consumer_key, request_token, verifier string
 	var ok bool
 	consumer_key, ok = auth.GetOAuthParameter(CONSUMER_KEY_PARAM)
 	if !ok {
@@ -388,8 +401,13 @@ func (e *EndPoints) TokenCredentials(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing OAuth temporary credentials: No request token", http.StatusInternalServerError)
 		return
 	}
+	verifier, ok = auth.GetOAuthParameter(VERIFIER_PARAM)
+	if !ok {
+		http.Error(w, "Missing OAuth Verifier", http.StatusInternalServerError)
+		return
+	}
 
-	token_key, token_secret := e.store.CreateCredentials(consumer_key, request_token)
+	token_key, token_secret := e.store.CreateCredentials(consumer_key, request_token, verifier)
 
 	result := make(url.Values)
 	result.Set(TOKEN_PARAM, token_key)
@@ -499,9 +517,17 @@ func NewAuthenticatedRequest(r *http.Request, store BackendStore) (q *Authentica
 	return &AuthenticatedRequest{r, u.OAuthParameters}, nil
 }
 
+//returns the current token
+func (req *AuthenticatedRequest) GetToken() (value string, exists bool) {
+	return req.GetOAuthParameter(TOKEN_PARAM)
+}
+
 //GetOAuthParameter provides a unified access to all oauth parameters present in the request.
 // If a parameter is not present in the request, then it returns the empty string and the exists boolean is set to false.
 func (req *AuthenticatedRequest) GetOAuthParameter(name string) (value string, exists bool) {
+	if req == nil {
+		panic("nil receiver in AuthenticatedRequest")
+	}
 	vals := req.oauthParameters[name]
 	if len(vals) == 1 {
 		return vals[0], true
@@ -627,9 +653,11 @@ type UnauthenticatedRequest struct {
 //ParsingRequest reads from an anctual http.Request and turn it into a UnauthenticatedRequest.
 func ParsingRequest(r *http.Request, store BackendStore) (q *UnauthenticatedRequest) {
 	q = &UnauthenticatedRequest{
-		Request: r,
-		Method:  strings.ToUpper(r.Method),
-		store:   store,
+		Request:         r,
+		Method:          strings.ToUpper(r.Method),
+		OAuthParameters: make(url.Values),
+		OtherParameters: make(url.Values),
+		store:           store,
 	}
 	q.parseParameterTransmission()
 	return
@@ -744,7 +772,7 @@ func (u *UnauthenticatedRequest) GetOAuthParameter(name string) (value string, e
 //   The signature process does not change the request or its parameters,
 //   with the exception of the "oauth_signature" parameter.
 func (u *UnauthenticatedRequest) CheckSignature() bool {
-	var method, consumer_key string
+	var method, consumer_key, token_key string
 	var ok bool
 	if method, ok = u.GetOAuthParameter("oauth_signature_method"); !ok {
 		return false
@@ -753,24 +781,36 @@ func (u *UnauthenticatedRequest) CheckSignature() bool {
 	if consumer_key, ok = u.GetOAuthParameter("oauth_consumer_key"); !ok {
 		return false
 	}
+	token_key, _ = u.GetOAuthParameter("token_key")
 
-	key := u.store.ConsumerSecret(consumer_key)
-	switch method {
-	case PLAINTEXT:
-		return u.PlainTextSignature(key) == u.Signature
-	case HMAC_SHA1:
-		//yes the pseudo signature is the key used in hmac_sha1
-		return _HMAC_SHA1_Verify(u.SignatureBaseString(), u.PlainTextSignature(key), u.Signature)
-	case RSA_SHA1:
-		return _RSA_SHA1_Verify(u.SignatureBaseString(), key, u.Signature)
-	default:
+	consumer_secret, err := u.store.ConsumerSecret(consumer_key)
+	if err != nil {
 		return false
 	}
 
+	switch method {
+	case PLAINTEXT:
+		token_secret, err := u.store.TokenSecret(token_key)
+		if err != nil {
+			return false
+		}
+		return u.PlainTextKey(consumer_secret, token_secret) == u.Signature
+	case HMAC_SHA1:
+		//yes the pseudo signature is the key used in hmac_sha1
+		token_secret, err := u.store.TokenSecret(token_key)
+		if err != nil {
+			return false
+		}
+		return _HMAC_SHA1_Verify(u.SignatureBaseString(), u.PlainTextKey(consumer_secret, token_secret), u.Signature)
+	case RSA_SHA1:
+		return _RSA_SHA1_Verify(u.SignatureBaseString(), consumer_secret, u.Signature)
+	default:
+		return false
+	}
 	return false
 }
 
-//PlainTextSignature returns the string used in PLAINTEXT signature, and also used as key in the HMAC_SHA1. The RFC defines the PLAINTEXT signature as:
+//PlainTextKey returns the string used in PLAINTEXT signature, and also used as key in the HMAC_SHA1. The RFC defines the PLAINTEXT signature as:
 //
 //   The "PLAINTEXT" method does not employ a signature algorithm.  It
 //   MUST be used with a transport-layer mechanism such as TLS or SSL (or
@@ -787,10 +827,8 @@ func (u *UnauthenticatedRequest) CheckSignature() bool {
 //       when either secret is empty.
 //
 //   3.  The token shared-secret, after being encoded (Section 3.6).
-func (u *UnauthenticatedRequest) PlainTextSignature(consumer_secret string) (pseudosignature string) {
-
-	token_share_secret, _ := u.GetOAuthParameter("oauth_token_secret")
-	return PercentEncode(consumer_secret) + "&" + PercentEncode(token_share_secret)
+func (u *UnauthenticatedRequest) PlainTextKey(consumer_secret, token_secret string) (pseudosignature string) {
+	return PercentEncode(consumer_secret) + "&" + PercentEncode(token_secret)
 
 }
 
@@ -900,7 +938,12 @@ func (u *UnauthenticatedRequest) SignatureBaseString() string {
 //   is represented by the base string URI:
 //   "https://www.example.net:8080/".
 func (u *UnauthenticatedRequest) BaseStringURI() string {
-	return filterBaseStringURI(u.URL).String()
+	ur := &url.URL{
+		Scheme: u.URL.Scheme,
+		Host:   u.Host,
+		Path:   u.URL.Path,
+	}
+	return filterBaseStringURI(ur).String()
 }
 func filterBaseStringURI(fullURL *url.URL) (filtered *url.URL) {
 	filtered = &url.URL{
@@ -1431,6 +1474,9 @@ func _RSA_SHA1_Verify(message, key, signature string) bool {
 	//key is ignored in rsa_sha1
 	keybytes, err := base64.StdEncoding.DecodeString(key)
 	publicKey, err := x509.ParsePKIXPublicKey(keybytes)
+	if err != nil {
+		panic(fmt.Sprintf("public key malformed:{%s} cause %s", key, err))
+	}
 	rsaPublicKey := publicKey.(*rsa.PublicKey)
 	hashfun := sha1.New()
 	hashfun.Write([]byte(message))

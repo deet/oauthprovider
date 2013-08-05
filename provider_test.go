@@ -18,8 +18,11 @@ import (
 //hard code the consumer key
 type FakeStore map[string]string
 
-func (f FakeStore) ConsumerSecret(consumer_key string) string {
-	return f[consumer_key]
+func (f FakeStore) ConsumerSecret(consumer_key string) (secret string, err error) {
+	return f[consumer_key], nil
+}
+func (f FakeStore) TokenSecret(token_key string) (secret string, err error) {
+	return "", nil
 }
 func (f FakeStore) Uniqueness(nonce, customer_key, token_key string) bool {
 	return true //fake always accept stuff
@@ -28,10 +31,10 @@ func (f FakeStore) ValidateToken(token, consumer_key string) bool {
 	return true
 }
 
-func (f FakeStore) CreateTemporaryCredentials(consumer_key string) (token_key, token_secret string) {
+func (f FakeStore) CreateTemporaryCredentials(consumer_key, callback string) (token_key, token_secret string) {
 	return "token_key", "token_secret"
 }
-func (f FakeStore) CreateCredentials(consumer_key, request_token string) (token_key, token_secret string) {
+func (f FakeStore) CreateCredentials(consumer_key, request_token, verifier string) (token_key, token_secret string) {
 	return "permanent_token_key", "permanent_token_secret"
 }
 
@@ -44,13 +47,22 @@ Authorization: OAuth realm="Photos",
 	oauth_version="1.0",
 	oauth_consumer_key="dpf43f3p2l4k3l03",
 	oauth_signature_method="HMAC-SHA1",
-	oauth_timestamp="1375199363",
-	oauth_nonce="47fb7230ed0de7dc1ca6114e250e0dae",
-	oauth_signature="pKOpG%2FRH4CfmX%2Bk5zAKqJtRUNuU%3D"
+	oauth_timestamp="1375447011",
+	oauth_nonce="cb3ecc9af9ac55915e83e9569c1050dd",
+	oauth_signature="LBx%2BdMxseZO5yp9dpAeRhG%2BmQD4%3D"
 
 `) // the extra space is required
 	store := make(FakeStore)
 	store["dpf43f3p2l4k3l03"] = "kd94hf93k423kf44"
+
+	ur := ParsingRequest(req, store)
+	urb := ur.SignatureBaseString()
+	xurb := "GET&http%3A%2F%2Fphotos.example.net%2Finitiate&oauth_consumer_key%3Ddpf43f3p2l4k3l03%26oauth_nonce%3Dcb3ecc9af9ac55915e83e9569c1050dd%26oauth_signature_method%3DHMAC-SHA1%26oauth_timestamp%3D1375447011%26oauth_version%3D1.0"
+	if urb != xurb {
+		t.Fatalf("Failed to generate the base string uri \n%s\n%s", urb, xurb)
+
+	}
+
 	_, err := NewAuthenticatedRequest(req, store)
 	if err != nil {
 		t.Fatalf("Failed to authenticate the request %v", err)
@@ -78,9 +90,29 @@ func HMAC_Sign(message string, key string) string {
 	return string(base64signature)
 }
 
+func Test_PEM(t *testing.T) {
+	pemKey := `MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAs9VFDqiFL1wFpZnioFxPqPXqnSEivCYZBO8EoHPuDj75KcWlOTf5EJdHVtSlMv4ybmxLKu1GQXXyzgcuI7T8HFs6MwlvmUvRKIiY7KKGv/pp+BEns63QH84zk2VtqfrzxemEOGn1XTpegOM6pz78iGHqwdavSvHqv6dql1i/UR5UUtHSsfLy6hhug7b4R+dPbwQBDnksWYADDDFyXSIt8iSW3jdVf69MRlKJJ0MKp+VHznqQRUCUaxfllMR6YTdrK3TaDR3Jy8DfGn04Fj7pKkdaGt8K8n/iLa9eEY65i7FV26vYX8eHd6pQqd9C2kl1eAjtiJAMhnFrDkDmJkSXwQIDAQAB`
+	// block, _ := pem.Decode(([]byte)(pemKey))
+	// _ = block.Bytes
+
+	//encoded := base64.StdEncoding.EncodeToString(bin)
+
+	keybytes, err := base64.StdEncoding.DecodeString(pemKey)
+	if err != nil {
+		t.Fatalf("failed to decode %s", err)
+
+	}
+	_, err = x509.ParsePKIXPublicKey(keybytes)
+	if err != nil {
+		t.Fatalf("failed to read %s", err)
+
+	}
+
+}
+
 func Test_Crypto_RSA(t *testing.T) {
 	//1 generate a random private key
-	key, err := rsa.GenerateKey(rand.Reader, 512)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("even failed to generate private key %v", err)
 	}
@@ -89,6 +121,8 @@ func Test_Crypto_RSA(t *testing.T) {
 		t.Fatalf("even failed to generate public  key %v", err)
 	}
 	publicKey := base64.StdEncoding.EncodeToString(pbytes)
+	//t.Fatalf("VALID FORMAT FOR PUBLIC KEY IS\npublicKey :='%s'", publicKey)
+
 	message := `POST&http%3A%2F%2Fexample.com%2Frequest&a2%3Dr%2520b%26a3%3D2%2520q%26a3%3Da%26b5%3D%253D%25253D%26c%2540%3D%26c2%3D%26oauth_consumer_key%3D9djdj82h48djs9d2%26oauth_nonce%3D7d8f3e4a%26oauth_signature_method%3DHMAC-SHA1%26oauth_timestamp%3D137131201%26oauth_token%3Dkkk9d7dh3k39sjv7`
 	signature := RSA_Sign(key, message, "ignored")
 
