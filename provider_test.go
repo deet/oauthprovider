@@ -201,7 +201,10 @@ func Test_signatureBaseString(t *testing.T) {
 
 	u, _ := url.Parse("http://example.com/request?b5=%3D%253D&a3=a&c%40=&a2=r%20b")
 	req := &UnauthenticatedRequest{
-		Request:         &http.Request{URL: u},
+		Request: &http.Request{
+			URL:  u,
+			Host: "example.com",
+		},
 		OAuthParameters: vals,
 		Method:          "POST",
 		Realm:           "Example",
