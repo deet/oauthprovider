@@ -2,7 +2,7 @@
 
 [![Build Status](https://travis-ci.org/ericaro/oauthprovider.png?branch=master)](https://travis-ci.org/ericaro/oauthprovider) TravisCI
 
-<a href="http://goci.me/project/github.com/ericaro/oauthprovider"><img src="http://goci.me/project/image/github.com/ericaro/oauthprovider" /></a> goCI
+[![Build Status](https://goci.herokuapp.com/project/image/github.com/ericaro/oauthprovider)](http://goci.me/project/github.com/ericaro/oauthprovider)
 
 
 (if you are interested in a Client side version check out [this version](https://github.com/ericaro/oauth) )
